@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Data Breach Runner</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050a14; /* Deep dark blue */
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; /* Prevent pull-to-refresh on mobile */
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        .hud-text {
+            color: #00ffea;
+            text-shadow: 0 0 10px #00ffea;
+            font-weight: bold;
+        }
+        #score-display {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            font-size: 24px;
+        }
+        #game-over-screen {
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border: 2px solid #ff0055;
+            box-shadow: 0 0 20px #ff0055;
+            border-radius: 8px;
+            display: none;
+            pointer-events: auto;
+        }
+        h1 {
+            font-size: 40px;
+            margin: 0 0 10px 0;
+            color: #ff0055;
+            text-shadow: 0 0 10px #ff0055;
+            text-transform: uppercase;
+        }
+        p {
+            color: #fff;
+            margin-bottom: 30px;
+            font-size: 18px;
+        }
+        button {
+            background: transparent;
+            border: 2px solid #00ffea;
+            color: #00ffea;
+            padding: 15px 30px;
+            font-size: 20px;
+            font-family: inherit;
+            font-weight: bold;
+            cursor: pointer;
+            text-transform: uppercase;
+            box-shadow: 0 0 10px #00ffea;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #00ffea;
+            color: #000;
+        }
+        #start-hint {
+            position: absolute;
+            bottom: 20%;
+            width: 100%;
+            text-align: center;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-layer">
+        <div id="score-display" class="hud-text">DATA: 0 MB</div>
+        
+        <div id="start-hint" class="hud-text">TAP OR CLICK TO START INJECTION</div>
+
+        <div id="game-over-screen">
+            <h1>SYSTEM FAILURE</h1>
+            <p>Connection Terminated.<br>Data Collected: <span id="final-score">0</span> MB</p>
+            <button onclick="resetGame()">RETRY INJECTION</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score-display');
+        const gameOverScreen = document.getElementById('game-over-screen');
+        const finalScoreSpan = document.getElementById('final-score');
+        const startHint = document.getElementById('start-hint');
+
+        // Fix: Initialize display to 'none' so the start condition works immediately
+        gameOverScreen.style.display = 'none';
+
+        let width, height;
+        let gameRunning = false;
+        let score = 0;
+        let gameSpeed = 1.5;
+        let frameCount = 0;
+
+        // Player settings
+        const player = {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 40,
+            color: '#00ffea',
+            trail: []
+        };
+
+        // Game Arrays
+        let obstacles = [];
+        let particles = [];
+        let backgroundText = [];
+
+        // Audio Context (Synthesized sounds)
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        const audioCtx = new AudioContext();
+
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(100, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(10, audioCtx.currentTime + 0.5);
+                gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.5);
+            } else if (type === 'score') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+            }
+        }
+
+        // Resize handling
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            player.y = height - 100;
+            if (!gameRunning) player.x = width / 2 - player.width / 2;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // Input Handling
+        let targetX = width / 2;
+        
+        // Mouse/Touch movement
+        function handleInput(x) {
+            targetX = x - player.width / 2;
+            // Clamp to screen
+            if (targetX < 0) targetX = 0;
+            if (targetX > width - player.width) targetX = width - player.width;
+        }
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (gameRunning) handleInput(e.clientX);
+        });
+        
+        canvas.addEventListener('touchmove', (e) => {
+            if (gameRunning) {
+                e.preventDefault(); // Stop scrolling
+                handleInput(e.touches[0].clientX);
+            }
+        }, { passive: false });
+
+        // Keyboard movement
+        let keyLeft = false;
+        let keyRight = false;
+        const keySpeed = 15;
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft') keyLeft = true;
+            if (e.code === 'ArrowRight') keyRight = true;
+            if (!gameRunning && gameOverScreen.style.display === 'none') startGame();
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft') keyLeft = false;
+            if (e.code === 'ArrowRight') keyRight = false;
+        });
+
+        // Click to start
+        canvas.addEventListener('click', () => {
+            if (!gameRunning && gameOverScreen.style.display === 'none') startGame();
+        });
+        
+        canvas.addEventListener('touchstart', () => {
+            if (!gameRunning && gameOverScreen.style.display === 'none') startGame();
+        });
+
+        // --- Game Logic ---
+
+        class Obstacle {
+            constructor() {
+                this.width = Math.random() * (width * 0.4) + 50;
+                this.height = 30;
+                this.x = Math.random() * (width - this.width);
+                this.y = -50;
+                this.speed = gameSpeed;
+                this.color = '#ff0055'; // Red firewall
+                this.glitchOffset = 0;
+            }
+
+            update() {
+                this.y += this.speed;
+                // Glitch effect
+                if (Math.random() > 0.9) this.glitchOffset = (Math.random() - 0.5) * 10;
+                else this.glitchOffset = 0;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = this.color;
+                ctx.fillRect(this.x + this.glitchOffset, this.y, this.width, this.height);
+                
+                // Tech lines inside
+                ctx.fillStyle = '#59001f';
+                ctx.fillRect(this.x + this.glitchOffset + 5, this.y + 5, this.width - 10, this.height - 10);
+                
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class BgText {
+            constructor() {
+                this.x = Math.random() * width;
+                this.y = Math.random() * height;
+                this.speed = Math.random() * 2 + 0.5;
+                this.text = Math.random() > 0.5 ? '1' : '0';
+                this.opacity = Math.random() * 0.5;
+                this.size = Math.random() * 14 + 10;
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > height) {
+                    this.y = -20;
+                    this.x = Math.random() * width;
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(0, 255, 234, ${this.opacity})`;
+                ctx.font = `${this.size}px monospace`;
+                ctx.fillText(this.text, this.x, this.y);
+            }
+        }
+
+        // Initialize Background
+        for (let i = 0; i < 50; i++) {
+            backgroundText.push(new BgText());
+        }
+
+        function startGame() {
+            gameRunning = true;
+            score = 0;
+            gameSpeed = 1.5;
+            obstacles = [];
+            particles = [];
+            startHint.style.display = 'none';
+            scoreDisplay.innerText = "DATA: 0 MB";
+            
+            // Initial position based on mouse if available, else center
+            if (!keyLeft && !keyRight) {
+                 // Keep targetX where it was or reset to center
+            }
+            
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            loop();
+        }
+
+        function spawnObstacle() {
+            // Spawn rate increases with speed
+            if (frameCount % Math.max(20, Math.floor(60 - gameSpeed * 2)) === 0) {
+                obstacles.push(new Obstacle());
+            }
+        }
+
+        function updatePlayer() {
+            // Keyboard override
+            if (keyLeft) targetX -= keySpeed;
+            if (keyRight) targetX += keySpeed;
+
+            // Clamp target
+            if (targetX < 0) targetX = 0;
+            if (targetX > width - player.width) targetX = width - player.width;
+
+            // Smooth lerp movement
+            player.x += (targetX - player.x) * 0.2;
+
+            // Trail effect
+            player.trail.push({x: player.x, y: player.y});
+            if (player.trail.length > 10) player.trail.shift();
+        }
+
+        function checkCollisions() {
+            for (let obs of obstacles) {
+                if (
+                    player.x < obs.x + obs.width &&
+                    player.x + player.width > obs.x &&
+                    player.y < obs.y + obs.height &&
+                    player.y + player.height > obs.y
+                ) {
+                    gameOver();
+                }
+            }
+        }
+
+        function gameOver() {
+            gameRunning = false;
+            playSound('crash');
+            createExplosion(player.x + player.width/2, player.y + player.height/2);
+            gameOverScreen.style.display = 'block';
+            finalScoreSpan.innerText = Math.floor(score);
+        }
+
+        function resetGame() {
+            gameOverScreen.style.display = 'none';
+            player.x = width / 2 - player.width / 2;
+            targetX = player.x;
+            player.trail = [];
+            
+            // Draw one frame to clear the explosion
+            ctx.fillStyle = '#050a14';
+            ctx.fillRect(0, 0, width, height);
+            
+            startGame();
+        }
+
+        function createExplosion(x, y) {
+            for (let i = 0; i < 30; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 20,
+                    vy: (Math.random() - 0.5) * 20,
+                    life: 1.0,
+                    color: Math.random() > 0.5 ? '#00ffea' : '#ff0055'
+                });
+            }
+        }
+
+        function draw() {
+            // Clear background with slight fade for motion blur feel
+            ctx.fillStyle = 'rgba(5, 10, 20, 0.4)';
+            ctx.fillRect(0, 0, width, height);
+
+            // Draw Background Matrix Code
+            backgroundText.forEach(t => {
+                t.update();
+                t.draw();
+            });
+
+            if (gameRunning) {
+                updatePlayer();
+                spawnObstacle();
+                checkCollisions();
+
+                // Increase score & speed
+                score += 0.1;
+                if (frameCount % 600 === 0) gameSpeed += 0.5; // Increase speed every ~10s
+                scoreDisplay.innerText = "DATA: " + Math.floor(score) + " MB";
+            }
+
+            // Draw Player Trail
+            for (let i = 0; i < player.trail.length; i++) {
+                let t = player.trail[i];
+                let alpha = i / player.trail.length;
+                ctx.fillStyle = `rgba(0, 255, 234, ${alpha * 0.5})`;
+                ctx.fillRect(t.x, t.y, player.width, player.height);
+            }
+
+            // Draw Player
+            if (gameRunning) {
+                ctx.fillStyle = player.color;
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = player.color;
+                ctx.fillRect(player.x, player.y, player.width, player.height);
+                ctx.shadowBlur = 0;
+            }
+
+            // Draw Obstacles
+            obstacles.forEach((obs, index) => {
+                if (gameRunning) obs.update();
+                obs.draw();
+                // Remove off-screen obstacles
+                if (obs.y > height) obstacles.splice(index, 1);
+            });
+
+            // Draw Particles (Explosion)
+            particles.forEach((p, index) => {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.05;
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = p.life;
+                ctx.fillRect(p.x, p.y, 5, 5);
+                ctx.globalAlpha = 1;
+                if (p.life <= 0) particles.splice(index, 1);
+            });
+
+            frameCount++;
+            requestAnimationFrame(draw);
+        }
+
+        function loop() {
+            if(gameRunning) {
+                // The loop logic is mainly inside draw() for this simple setup
+            }
+        }
+
+        // Start the render loop immediately to show background
+        draw();
+
+    </script>
+</body>
+</html>
