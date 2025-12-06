@@ -58,4 +58,4 @@ Responsive: Adapts to desktop and mobile screen sizes automatically.
 
 This game was created as a playful response to a "honeypot" prank involving a file named windowsdistatıf rgb.exe. The aesthetic mimics the "fake system update" or "matrix" style often used in tech-themed pranks and movies.
 
-Created by Gemini
+Created by Uzay
